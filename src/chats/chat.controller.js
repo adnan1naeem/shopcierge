@@ -14,103 +14,275 @@ const getChats = async (req, res) => {
 
 const fetchTotalUserMessagesTimeSeries = async (req, res) => {
   try {
-    const { shopId, startDate: customStartDate } = req.query;
+    const { shopId, startDate } = req.query;
 
-    // Calculate start date 
-    let startDate;
-    let prevStartDate;
-    const endDate = new Date();
-
-    if (customStartDate) {
-      startDate = new Date(customStartDate);
-      prevStartDate = new Date(startDate); 
-      prevStartDate.setDate(prevStartDate.getDate() - (startDate - prevStartDate) / (1000 * 60 * 60 * 24)); 
-    } else {
-      startDate = new Date();
-      startDate.setDate(endDate.getDate() - 7); 
-      prevStartDate = new Date();
-      prevStartDate.setDate(endDate.getDate() - 14); 
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
     }
 
-    const timeSeriesData = [];
-    let totalUserMessages = 0;
-    let prevTotalUserMessages = 0;
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
 
-    for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      const nextDay = new Date(d);
-      nextDay.setDate(d.getDate() + 1);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = new Date(); // Current date
 
-      const result = await chatModel.aggregate([
-        {
-          $match: {
-            shopId: shopIdObject, 
-            createdAt: { $gte: d, $lt: nextDay },
+    start.setHours(0, 0, 0, 0);
+
+    const currentDate = new Date();
+    const diffInTime = currentDate.getTime() - start.getTime();
+
+    const firstPeriodStart = new Date(start.getTime() - diffInTime); 
+    const firstPeriodEnd = new Date(start.getTime());
+
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999); 
+
+    // Aggregate data for the first period (previous period)
+    const firstPeriodChats = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: firstPeriodStart, $lt: firstPeriodEnd },
+        },
+      },
+      {
+        $project: {
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalMessages: { $size: "$messages" },
+          userMessages: {
+            $size: {
+              $filter: { input: "$messages", as: "msg", cond: { $eq: ["$$msg.role", "user"] } },
+            },
           },
         },
-        {
-          $project: {
-            userMessages: { $size: { $filter: { input: "$messages", as: "msg", cond: { $eq: ["$$msg.role", "user"] } } } },
+      },
+      {
+        $group: {
+          _id: "$date",
+          totalUserMessages: { $sum: "$userMessages" },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: "$totalUserMessages",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    const secondPeriodStart = start;
+    // Aggregate data for the second period (current 10 days)
+    const secondPeriodChats = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: secondPeriodStart, $lt: end },
+        },
+      },
+      {
+        $project: {
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalMessages: { $size: "$messages" },
+          userMessages: {
+            $size: {
+              $filter: { input: "$messages", as: "msg", cond: { $eq: ["$$msg.role", "user"] } },
+            },
           },
         },
-        {
-          $group: {
-            _id: null,
-            totalUserMessages: { $sum: "$userMessages" },
-          },
+      },
+      {
+        $group: {
+          _id: "$date",
+          totalUserMessages: { $sum: "$userMessages" },
         },
-      ]);
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: "$totalUserMessages",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
 
-      const dailyUserMessages = result.length > 0 ? result[0].totalUserMessages : 0; 
-      totalUserMessages += dailyUserMessages; 
+    let timeSeries = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split("T")[0]; // Format as 'YYYY-MM-DD'
+      const chatData = secondPeriodChats.find((chat) => chat.date === dateStr);
 
-      const dateStr = d.toISOString().split("T")[0];
-
-      timeSeriesData.push({ key: dateStr, value: dailyUserMessages });
+      timeSeries.push({
+        key: dateStr,
+        value: chatData ? chatData.value : 0, // Use the count or default to 0
+      });
     }
 
-    // Calculate previous period
-    for (let d = new Date(prevStartDate); d <= new Date(startDate); d.setDate(d.getDate() + 1)) {
-      const nextDay = new Date(d);
-      nextDay.setDate(d.getDate() + 1);
+    // Calculate total user messages for both periods
+    const firstPeriodTotalMessages = firstPeriodChats.reduce((sum, chat) => sum + chat.value, 0);
+    const secondPeriodTotalMessages = secondPeriodChats.reduce((sum, chat) => sum + chat.value, 0);
 
-      const result = await chatModel.aggregate([
-        {
-          $match: {
-            shopId: shopIdObject, 
-            createdAt: { $gte: d, $lt: nextDay },
-          },
-        },
-        {
-          $project: {
-            userMessages: { $size: { $filter: { input: "$messages", as: "msg", cond: { $eq: ["$$msg.role", "user"] } } } },
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            totalUserMessages: { $sum: "$userMessages" },
-          },
-        },
-      ]);
+    console.log(firstPeriodTotalMessages, 'firstPeriodTotalMessages');
+    console.log(secondPeriodTotalMessages, 'secondPeriodTotalMessages');
+    
+    // Calculate trend percentage based on total user messages
+    const trendPercentage = ((secondPeriodTotalMessages - firstPeriodTotalMessages ) / secondPeriodTotalMessages) * 100;
+    console.log(trendPercentage, 'trendPercentage');
 
-      const dailyUserMessages = result.length > 0 ? result[0].totalUserMessages : 0; 
-      prevTotalUserMessages += dailyUserMessages; 
-    }
+    // Prepare chart data for response
+    const chartData = secondPeriodChats.map(({ key, value }) => ({ key, value }));
 
-    // Calculate trend percentage
-    let trendPercentage = 0;
-    console.log(prevTotalUserMessages, 'prevTotalUserMessages');
-    if (prevTotalUserMessages > 0) {
-      trendPercentage = ((totalUserMessages - prevTotalUserMessages) / prevTotalUserMessages) * 100;
-    }
-
-
-    res.status(200).json({totalUserMessages, trendPercentage, timeSeriesData }); 
+    return res.status(200).json({
+      name: 'Total User Messages',
+      value: secondPeriodTotalMessages,
+      trend: trendPercentage.toFixed(2), // Add trend percentage
+      chartData: timeSeries,
+    });
   } catch (error) {
-    console.error("Error fetching time series data:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+    console.error("Error calculating chat statistics:", error);
+    return res.status(500).json({ error: "Failed to calculate chat statistics" });
   }
 };
 
-module.exports = { getChats,fetchTotalUserMessagesTimeSeries };
+const fetchUserMessagesPerChat = async (req, res) => {
+  try {
+    const { shopId, startDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = new Date(); // Current date
+
+    start.setHours(0, 0, 0, 0);
+
+    const currentDate = new Date();
+    const diffInTime = currentDate.getTime() - start.getTime();
+
+    const firstPeriodStart = new Date(start.getTime() - diffInTime); 
+    const firstPeriodEnd = new Date(start.getTime());
+
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999); 
+
+    // Aggregate data for the first period (previous period)
+    const firstPeriodChats = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: firstPeriodStart, $lt: firstPeriodEnd },
+        },
+      },
+      {
+        $project: {
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalMessages: { $size: "$messages" },
+          userMessages: {
+            $size: {
+              $filter: { input: "$messages", as: "msg", cond: { $eq: ["$$msg.role", "user"] } },
+            },
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$date",
+          totalChats: { $sum: 1 },
+          totalUserMessages: { $sum: "$userMessages" },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: { $divide: ["$totalUserMessages", "$totalChats"] },
+          _id: 0,
+          totalChats: 1,
+          totalUserMessages: 1,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    const secondPeriodStart = start;
+    // Aggregate data for the second period (current 10 days)
+    const secondPeriodChats = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: secondPeriodStart, $lt: end },
+        },
+      },
+      {
+        $project: {
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalMessages: { $size: "$messages" },
+          userMessages: {
+            $size: {
+              $filter: { input: "$messages", as: "msg", cond: { $eq: ["$$msg.role", "user"] } },
+            },
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$date",
+          totalChats: { $sum: 1 },
+          totalUserMessages: { $sum: "$userMessages" },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: { $divide: ["$totalUserMessages", "$totalChats"] },
+          _id: 0,
+          totalChats: 1,
+          totalUserMessages: 1,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    const timeSeries = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split("T")[0]; // Format as 'YYYY-MM-DD'
+
+      // Find if the date exists in secondPeriodChats
+      const chatData = secondPeriodChats.find((chat) => chat.date === dateStr);
+
+      timeSeries.push({
+        key: dateStr,
+        value: chatData ? chatData.value : 0, // Use the count or default to 0
+        totalChats: chatData ? chatData.totalChats : 0,
+        totalUserMessages: chatData ? chatData.totalUserMessages : 0,
+      });
+    }
+
+    // Calculate averages for both periods
+    const firstPeriodAvg = firstPeriodChats.reduce((sum, chat) => sum + chat.value, 0) / firstPeriodChats.length;
+    const secondPeriodAvg = secondPeriodChats.reduce((sum, chat) => sum + chat.value, 0) / secondPeriodChats.length;
+
+    // Calculate the trend percentage between the two periods
+    const trendPercentage = ((firstPeriodAvg - secondPeriodAvg) / firstPeriodAvg) * 100;
+
+    // Calculate overall averages for the current period (last 7 days)
+    const totalChats = secondPeriodChats.reduce((sum, chat) => sum + chat.totalChats, 0);
+    const totalUserMessages = secondPeriodChats.reduce((sum, chat) => sum + chat.totalUserMessages, 0);
+    const overallAverage = totalChats > 0 ? totalUserMessages / totalChats : 0;
+
+    return res.status(200).json({
+      name: 'User Messages per Chat',
+      value: overallAverage.toFixed(2),
+      trend: trendPercentage.toFixed(2), // Add trend percentage
+      chartData: timeSeries.map(({ key, value }) => ({ key, value })),
+    });
+  } catch (error) {
+    console.error("Error calculating chat statistics:", error);
+    return res.status(500).json({ error: "Failed to calculate chat statistics" });
+  }
+};
+
+
+module.exports = { getChats,fetchTotalUserMessagesTimeSeries,fetchUserMessagesPerChat };
