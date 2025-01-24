@@ -284,5 +284,118 @@ const fetchUserMessagesPerChat = async (req, res) => {
   }
 };
 
+const fetchEngagedChatsTimeSeries = async (req, res) => {
+  try {
+    const { shopId, startDate } = req.query;
 
-module.exports = { getChats,fetchTotalUserMessagesTimeSeries,fetchUserMessagesPerChat };
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+
+    // Parse and set date range
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = new Date();
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Calculate the first period start and end dates
+    const diffInTime = end.getTime() - start.getTime(); // Custom period duration
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1); // Just before the current period starts
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    // Aggregation for the first period (previous period)
+    const firstPeriodEngagedChats = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: firstPeriodStart, $lte: firstPeriodEnd },
+          "messages.role": "user",
+        },
+      },
+      {
+        $project: {
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+        },
+      },
+      {
+        $group: {
+          _id: "$date",
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const firstPeriodTotalEngagedChats = firstPeriodEngagedChats.reduce((sum, chat) => sum + chat.count, 0);
+    console.log(firstPeriodTotalEngagedChats ,'firstPeriodTotalEngagedChats');
+    // Aggregation for the second period (current period)
+    const secondPeriodEngagedChats = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+          "messages.role": "user",
+        },
+      },
+      {
+        $project: {
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+        },
+      },
+      {
+        $group: {
+          _id: "$date",
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: "$count",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Generate time series data
+    let timeSeries = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split("T")[0];
+      const chatData = secondPeriodEngagedChats.find((chat) => chat.key === dateStr);
+      timeSeries.push({
+        key: dateStr,
+        value: chatData ? chatData.value : 0,
+      });
+    }
+
+    // Calculate the total number of engaged chats for the current period
+    const secondPeriodTotalEngagedChats = timeSeries.reduce((sum, dataPoint) => sum + dataPoint.value, 0);
+
+    // Calculate trend percentage
+    const trendPercentage =
+      firstPeriodTotalEngagedChats === 0
+        ? secondPeriodTotalEngagedChats > 0
+          ? 100
+          : 0
+        : ((secondPeriodTotalEngagedChats - firstPeriodTotalEngagedChats) / firstPeriodTotalEngagedChats) * 100;
+
+    // Prepare response
+    return res.status(200).json({
+      name: "Engaged Chats",
+      value: secondPeriodTotalEngagedChats,
+      trend: trendPercentage.toFixed(2),
+      chartData: timeSeries,
+    });
+  } catch (error) {
+    console.error("Error calculating engaged chats:", error);
+    return res.status(500).json({ error: "Failed to calculate engaged chats" });
+  }
+};
+
+
+
+module.exports = { getChats,fetchTotalUserMessagesTimeSeries,fetchUserMessagesPerChat,fetchEngagedChatsTimeSeries}
