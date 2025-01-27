@@ -398,7 +398,75 @@ const fetchEngagedChatsTimeSeries = async (req, res) => {
     return res.status(500).json({ error: "Failed to calculate engaged chats" });
   }
 };
+const fetchTotalChatDurationTimeSeries = async (req, res) => {
+  try {
+    const { shopId, startDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+
+    // Parse and set date range
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = new Date();
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // MongoDB aggregation
+    const results = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $project: {
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          duration: { $subtract: ["$updatedAt", "$createdAt"] },
+        },
+      },
+      {
+        $group: {
+          _id: "$date",
+          totalDurationMs: { $sum: "$duration" },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: { $round: [{ $divide: ["$totalDurationMs", 60000] }, 0] }, // Convert ms to minutes
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Calculate total duration across all days
+    const totalDurationMinutes = results.reduce((sum, dataPoint) => sum + dataPoint.value, 0);
+
+    // Response structure
+    return res.status(200).json({
+      category: "Interaction",
+      name: "Total Chat Duration",
+      totalMinutes: totalDurationMinutes,
+      chartData: results,
+    });
+  } catch (error) {
+    console.error("Error calculating total chat duration:", error);
+    return res.status(500).json({ error: "Failed to calculate total chat duration" });
+  }
+};
 
 
 
-module.exports = { getChats,fetchTotalUserMessagesTimeSeries,fetchUserMessagesPerChat,fetchEngagedChatsTimeSeries}
+
+module.exports = { 
+  getChats,
+  fetchTotalUserMessagesTimeSeries,
+  fetchUserMessagesPerChat,
+  fetchEngagedChatsTimeSeries,
+  fetchTotalChatDurationTimeSeries
+}
