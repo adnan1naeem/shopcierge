@@ -133,6 +133,7 @@ const fetchTotalUserMessagesTimeSeries = async (req, res) => {
     const chartData = secondPeriodChats.map(({ key, value }) => ({ key, value }));
 
     return res.status(200).json({
+      category: 'Interaction',
       name: 'Total User Messages',
       value: secondPeriodTotalMessages,
       trend: trendPercentage.toFixed(2), // Add trend percentage
@@ -273,6 +274,7 @@ const fetchUserMessagesPerChat = async (req, res) => {
     const overallAverage = totalChats > 0 ? totalUserMessages / totalChats : 0;
 
     return res.status(200).json({
+      category: 'Interaction',
       name: 'User Messages per Chat',
       value: overallAverage.toFixed(2),
       trend: trendPercentage.toFixed(2), // Add trend percentage
@@ -385,6 +387,7 @@ const fetchEngagedChatsTimeSeries = async (req, res) => {
 
     // Prepare response
     return res.status(200).json({
+      category: 'Interaction',
       name: "Engaged Chats",
       value: secondPeriodTotalEngagedChats,
       trend: trendPercentage.toFixed(2),
