@@ -414,8 +414,42 @@ const fetchTotalChatDurationTimeSeries = async (req, res) => {
     start.setHours(0, 0, 0, 0);
     end.setHours(23, 59, 59, 999);
 
-    // MongoDB aggregation
-    const results = await chatModel.aggregate([
+    // Calculate the first period start and end dates
+    const diffInTime = end.getTime() - start.getTime(); // Custom period duration
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1); // Just before the current period starts
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    // Aggregation for the first period (previous period)
+    const firstPeriodResults = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: firstPeriodStart, $lte: firstPeriodEnd },
+        },
+      },
+      {
+        $project: {
+          date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          duration: { $subtract: ["$updatedAt", "$createdAt"] },
+        },
+      },
+      {
+        $group: {
+          _id: "$date",
+          totalDurationMs: { $sum: "$duration" },
+        },
+      },
+    ]);
+
+    const firstPeriodTotalDurationSeconds = firstPeriodResults.reduce(
+      (sum, dataPoint) => sum + Math.round(dataPoint.totalDurationMs / 1000),
+      0
+    );
+
+    // Aggregation for the second period (current period)
+    const secondPeriodResults = await chatModel.aggregate([
       {
         $match: {
           shopId: shopIdObject,
@@ -437,28 +471,65 @@ const fetchTotalChatDurationTimeSeries = async (req, res) => {
       {
         $project: {
           key: "$_id",
-          value: { $round: [{ $divide: ["$totalDurationMs", 60000] }, 0] }, // Convert ms to minutes
+          totalSeconds: { $divide: ["$totalDurationMs", 1000] },
+          minutes: { $floor: { $divide: ["$totalDurationMs", 60000] } },
+          seconds: {
+            $mod: [{ $divide: ["$totalDurationMs", 1000] }, 60],
+          },
           _id: 0,
         },
       },
       { $sort: { key: 1 } },
     ]);
 
-    // Calculate total duration across all days
-    const totalDurationMinutes = results.reduce((sum, dataPoint) => sum + dataPoint.value, 0);
+    // Generate time series data for the second period in minutes:seconds format
+    let timeSeries = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split("T")[0];
+      const chatData = secondPeriodResults.find((data) => data.key === dateStr);
+      timeSeries.push({
+        key: dateStr,
+        value: chatData
+          ? `${chatData.minutes}:${String(Math.round(chatData.seconds)).padStart(2, "0")}`
+          : "0:00",
+      });
+    }
 
-    // Response structure
+    // Calculate the total duration in seconds for the second period
+    const secondPeriodTotalDurationSeconds = secondPeriodResults.reduce(
+      (sum, dataPoint) => sum + dataPoint.totalSeconds,
+      0
+    );
+
+    // Calculate the trend percentage
+    const trendPercentage =
+      firstPeriodTotalDurationSeconds === 0
+        ? secondPeriodTotalDurationSeconds > 0
+          ? 100
+          : 0
+        : ((secondPeriodTotalDurationSeconds - firstPeriodTotalDurationSeconds) /
+            firstPeriodTotalDurationSeconds) *
+          100;
+
+    // Format total duration as minutes:seconds
+    const totalMinutes = Math.floor(secondPeriodTotalDurationSeconds / 60);
+    const totalSeconds = Math.round(secondPeriodTotalDurationSeconds % 60);
+    const totalDurationFormatted = `${totalMinutes}:${String(totalSeconds).padStart(2, "0")}`;
+
+    // Prepare the response
     return res.status(200).json({
-      category: "Interaction",
+      category: "Total Duration (Engaged Chats)",
       name: "Total Chat Duration",
-      totalMinutes: totalDurationMinutes,
-      chartData: results,
+      value: totalDurationFormatted,
+      trend: trendPercentage.toFixed(2),
+      chartData: timeSeries,
     });
   } catch (error) {
     console.error("Error calculating total chat duration:", error);
     return res.status(500).json({ error: "Failed to calculate total chat duration" });
   }
 };
+
 
 
 
