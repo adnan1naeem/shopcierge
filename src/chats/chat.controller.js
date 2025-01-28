@@ -1,8 +1,7 @@
-const mongoose = require("mongoose"); 
+const mongoose = require("mongoose");
 const chatService = require("./chat.service");
 const OrderModel = require("../orders/order.model");
-const chatModel = require('./chat.model')
-
+const chatModel = require("./chat.model");
 
 const getChats = async (req, res) => {
   try {
@@ -447,7 +446,7 @@ const fetchEngagedChatsTimeSeries = async (req, res) => {
         (chat) => chat.key === dateStr
       );
       const value = chatData ? chatData.value : 0;
-    
+
       // Only add to timeSeries if the value is not 0
       if (value !== 0) {
         timeSeries.push({
@@ -538,7 +537,7 @@ const fetchTotalChatDurationTimeSeries = async (req, res) => {
       (sum, dataPoint) => sum + Math.round(dataPoint.totalDurationMs / 1000),
       0
     );
-
+    console.log(firstPeriodTotalDurationSeconds, "first period total duration");
     // Aggregation for the second period (current period)
     const secondPeriodResults = await chatModel.aggregate([
       {
@@ -579,11 +578,12 @@ const fetchTotalChatDurationTimeSeries = async (req, res) => {
       const dateStr = d.toISOString().split("T")[0];
       const chatData = secondPeriodResults.find((data) => data.key === dateStr);
       const value = chatData
-        ? `${chatData.minutes}:${String(
-            Math.round(chatData.seconds)
-          ).padStart(2, "0")}`
+        ? `${chatData.minutes}:${String(Math.round(chatData.seconds)).padStart(
+            2,
+            "0"
+          )}`
         : "0:00";
-    
+
       // Only add to timeSeries if the value is not "0:00"
       if (value !== "0:00") {
         timeSeries.push({
@@ -599,17 +599,25 @@ const fetchTotalChatDurationTimeSeries = async (req, res) => {
       0
     );
 
+    console.log(
+      secondPeriodTotalDurationSeconds,
+      "second period total duration"
+    );
+
     // Calculate the trend percentage
     const trendPercentage =
       firstPeriodTotalDurationSeconds === 0
         ? secondPeriodTotalDurationSeconds > 0
           ? 100
           : 0
-        : ((secondPeriodTotalDurationSeconds -
-            firstPeriodTotalDurationSeconds) /
-            firstPeriodTotalDurationSeconds) *
-          100;
-
+        : Math.min(
+            ((secondPeriodTotalDurationSeconds -
+              firstPeriodTotalDurationSeconds) /
+              firstPeriodTotalDurationSeconds) *
+              100,
+            100
+          );
+    console.log(trendPercentage, "trend percentage");
     // Format total duration as minutes:seconds
     const totalMinutes = Math.floor(secondPeriodTotalDurationSeconds / 60);
     const totalSeconds = Math.round(secondPeriodTotalDurationSeconds % 60);
@@ -1007,11 +1015,12 @@ const fetchAvgChatDurationTimeSeries = async (req, res) => {
       const dateStr = d.toISOString().split("T")[0];
       const chatData = secondPeriodResults.find((data) => data.key === dateStr);
       const value = chatData
-        ? `${chatData.minutes}:${String(
-            Math.round(chatData.seconds)
-          ).padStart(2, "0")}`
+        ? `${chatData.minutes}:${String(Math.round(chatData.seconds)).padStart(
+            2,
+            "0"
+          )}`
         : "0:00";
-    
+
       if (value !== "0:00") {
         timeSeries.push({
           key: dateStr,
@@ -1159,15 +1168,15 @@ const fetchTotalChatsWithUserProduct = async (req, res) => {
       chartData: secondPeriodResults,
     });
   } catch (error) {
-    console.error("Error calculating total chats with product purchase:", error);
+    console.error(
+      "Error calculating total chats with product purchase:",
+      error
+    );
     return res
       .status(500)
       .json({ error: "Failed to calculate total chats with product purchase" });
   }
 };
-
-
-
 
 module.exports = {
   getChats,
@@ -1180,5 +1189,5 @@ module.exports = {
   fetchRecommendedProductsCount,
   fetchClickedProductsCount,
   fetchAvgChatDurationTimeSeries,
-  fetchTotalChatsWithUserProduct
+  fetchTotalChatsWithUserProduct,
 };
