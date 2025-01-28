@@ -1,4 +1,8 @@
+const mongoose = require("mongoose"); 
 const chatService = require("./chat.service");
+const OrderModel = require("../orders/order.model");
+const chatModel = require('./chat.model')
+
 
 const getChats = async (req, res) => {
   try {
@@ -163,17 +167,6 @@ const fetchTotalUserMessagesTimeSeries = async (req, res) => {
       { $sort: { key: 1 } },
     ]);
 
-    let timeSeries = [];
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split("T")[0]; // Format as 'YYYY-MM-DD'
-      const chatData = secondPeriodChats.find((chat) => chat.date === dateStr);
-
-      timeSeries.push({
-        key: dateStr,
-        value: chatData ? chatData.value : 0, // Use the count or default to 0
-      });
-    }
-
     // Calculate total user messages for both periods
     const firstPeriodTotalMessages = firstPeriodChats.reduce(
       (sum, chat) => sum + chat.value,
@@ -205,7 +198,7 @@ const fetchTotalUserMessagesTimeSeries = async (req, res) => {
       name: "Total User Messages",
       value: secondPeriodTotalMessages,
       trend: trendPercentage.toFixed(2), // Add trend percentage
-      chartData: timeSeries,
+      chartData: secondPeriodChats,
     });
   } catch (error) {
     console.error("Error calculating chat statistics:", error);
@@ -326,21 +319,6 @@ const fetchUserMessagesPerChat = async (req, res) => {
       { $sort: { key: 1 } },
     ]);
 
-    const timeSeries = [];
-    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-      const dateStr = d.toISOString().split("T")[0]; // Format as 'YYYY-MM-DD'
-
-      // Find if the date exists in secondPeriodChats
-      const chatData = secondPeriodChats.find((chat) => chat.date === dateStr);
-
-      timeSeries.push({
-        key: dateStr,
-        value: chatData ? chatData.value : 0, // Use the count or default to 0
-        totalChats: chatData ? chatData.totalChats : 0,
-        totalUserMessages: chatData ? chatData.totalUserMessages : 0,
-      });
-    }
-
     // Calculate averages for both periods
     const firstPeriodAvg =
       firstPeriodChats.reduce((sum, chat) => sum + chat.value, 0) /
@@ -369,7 +347,7 @@ const fetchUserMessagesPerChat = async (req, res) => {
       name: "User Messages per Chat",
       value: overallAverage.toFixed(2),
       trend: trendPercentage.toFixed(2), // Add trend percentage
-      chartData: timeSeries.map(({ key, value }) => ({ key, value })),
+      chartData: secondPeriodChats.map(({ key, value }) => ({ key, value })),
     });
   } catch (error) {
     console.error("Error calculating chat statistics:", error);
@@ -468,10 +446,15 @@ const fetchEngagedChatsTimeSeries = async (req, res) => {
       const chatData = secondPeriodEngagedChats.find(
         (chat) => chat.key === dateStr
       );
-      timeSeries.push({
-        key: dateStr,
-        value: chatData ? chatData.value : 0,
-      });
+      const value = chatData ? chatData.value : 0;
+    
+      // Only add to timeSeries if the value is not 0
+      if (value !== 0) {
+        timeSeries.push({
+          key: dateStr,
+          value,
+        });
+      }
     }
 
     // Calculate the total number of engaged chats for the current period
@@ -595,14 +578,19 @@ const fetchTotalChatDurationTimeSeries = async (req, res) => {
     for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
       const dateStr = d.toISOString().split("T")[0];
       const chatData = secondPeriodResults.find((data) => data.key === dateStr);
-      timeSeries.push({
-        key: dateStr,
-        value: chatData
-          ? `${chatData.minutes}:${String(
-              Math.round(chatData.seconds)
-            ).padStart(2, "0")}`
-          : "0:00",
-      });
+      const value = chatData
+        ? `${chatData.minutes}:${String(
+            Math.round(chatData.seconds)
+          ).padStart(2, "0")}`
+        : "0:00";
+    
+      // Only add to timeSeries if the value is not "0:00"
+      if (value !== "0:00") {
+        timeSeries.push({
+          key: dateStr,
+          value,
+        });
+      }
     }
 
     // Calculate the total duration in seconds for the second period
@@ -939,6 +927,248 @@ const fetchClickedProductsCount = async (req, res) => {
   }
 };
 
+const fetchAvgChatDurationTimeSeries = async (req, res) => {
+  try {
+    const { shopId, startDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+
+    // Parse and set date range
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = new Date();
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Calculate the first period start and end dates
+    const diffInTime = end.getTime() - start.getTime(); // Custom period duration
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1); // Just before the current period starts
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    // Aggregation for the first period (previous period)
+    const firstPeriodResults = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: firstPeriodStart, $lte: firstPeriodEnd },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          avgDurationMs: { $avg: { $subtract: ["$updatedAt", "$createdAt"] } },
+        },
+      },
+    ]);
+
+    const firstPeriodAvgDurationSeconds =
+      firstPeriodResults.length > 0
+        ? Math.round(firstPeriodResults[0].avgDurationMs / 1000)
+        : 0;
+
+    // Aggregation for the second period (current period)
+    const secondPeriodResults = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          avgDurationMs: { $avg: { $subtract: ["$updatedAt", "$createdAt"] } },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          avgSeconds: { $divide: ["$avgDurationMs", 1000] },
+          minutes: { $floor: { $divide: ["$avgDurationMs", 60000] } },
+          seconds: {
+            $mod: [{ $divide: ["$avgDurationMs", 1000] }, 60],
+          },
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Generate time series data for the second period in minutes:seconds format
+    let timeSeries = [];
+    for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+      const dateStr = d.toISOString().split("T")[0];
+      const chatData = secondPeriodResults.find((data) => data.key === dateStr);
+      const value = chatData
+        ? `${chatData.minutes}:${String(
+            Math.round(chatData.seconds)
+          ).padStart(2, "0")}`
+        : "0:00";
+    
+      if (value !== "0:00") {
+        timeSeries.push({
+          key: dateStr,
+          value,
+        });
+      }
+    }
+
+    // Calculate the average duration in seconds for the second period
+    const secondPeriodAvgDurationSeconds =
+      secondPeriodResults.length > 0
+        ? secondPeriodResults.reduce(
+            (sum, dataPoint) => sum + dataPoint.avgSeconds,
+            0
+          ) / secondPeriodResults.length
+        : 0;
+
+    // Calculate the trend percentage
+    const trendPercentage =
+      firstPeriodAvgDurationSeconds === 0
+        ? secondPeriodAvgDurationSeconds > 0
+          ? 100
+          : 0
+        : ((secondPeriodAvgDurationSeconds - firstPeriodAvgDurationSeconds) /
+            firstPeriodAvgDurationSeconds) *
+          100;
+
+    // Format average duration as minutes:seconds
+    const avgMinutes = Math.floor(secondPeriodAvgDurationSeconds / 60);
+    const avgSeconds = Math.round(secondPeriodAvgDurationSeconds % 60);
+    const avgDurationFormatted = `${avgMinutes}:${String(avgSeconds).padStart(
+      2,
+      "0"
+    )}`;
+
+    // Prepare the response
+    return res.status(200).json({
+      category: "Average Duration (Engaged Chats)",
+      name: "Average Chat Duration",
+      value: avgDurationFormatted,
+      trend: trendPercentage.toFixed(2),
+      chartData: timeSeries,
+    });
+  } catch (error) {
+    console.error("Error calculating average chat duration:", error);
+    return res
+      .status(500)
+      .json({ error: "Failed to calculate average chat duration" });
+  }
+};
+
+const fetchTotalChatsWithUserProduct = async (req, res) => {
+  try {
+    const { shopId, startDate } = req.query;
+
+    // Validate shopId
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+
+    // Parse and set date range
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000); // Default to last 7 days
+    const end = new Date();
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Calculate the first period start and end dates
+    const diffInTime = end.getTime() - start.getTime(); // Custom period duration
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1); // Just before the current period starts
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    // Aggregation for the first period (previous period)
+    const firstPeriodResults = await OrderModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: firstPeriodStart, $lte: firstPeriodEnd },
+          "shopciergeAttribution.chatId": { $exists: true },
+          "shopciergeAttribution.attributedProductIds.0": { $exists: true },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          value: { $sum: 1 }, // Count total chats
+        },
+      },
+    ]);
+
+    const firstPeriodTotalChats =
+      firstPeriodResults.length > 0 ? firstPeriodResults[0].value : 0;
+
+    // Aggregation for the second period (current period)
+    const secondPeriodResults = await OrderModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+          "shopciergeAttribution.chatId": { $exists: true },
+          "shopciergeAttribution.attributedProductIds.0": { $exists: true },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          value: { $sum: 1 }, // Count total chats per day
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: 1,
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+    const secondPeriodTotalChats = secondPeriodResults.reduce(
+      (sum, dataPoint) => sum + dataPoint.value,
+      0
+    );
+
+    // Calculate the trend percentage
+    const trendPercentage =
+      firstPeriodTotalChats === 0
+        ? secondPeriodTotalChats > 0
+          ? 100
+          : 0
+        : ((secondPeriodTotalChats - firstPeriodTotalChats) /
+            firstPeriodTotalChats) *
+          100;
+
+    // Prepare the response
+    return res.status(200).json({
+      category: "Total Chats with Product Purchase",
+      name: "Total Chats",
+      value: secondPeriodTotalChats,
+      trend: trendPercentage.toFixed(2),
+      chartData: secondPeriodResults,
+    });
+  } catch (error) {
+    console.error("Error calculating total chats with product purchase:", error);
+    return res
+      .status(500)
+      .json({ error: "Failed to calculate total chats with product purchase" });
+  }
+};
+
+
+
+
 module.exports = {
   getChats,
   getTotalChatsByShopId,
@@ -949,4 +1179,6 @@ module.exports = {
   fetchTotalChatDurationTimeSeries,
   fetchRecommendedProductsCount,
   fetchClickedProductsCount,
+  fetchAvgChatDurationTimeSeries,
+  fetchTotalChatsWithUserProduct
 };

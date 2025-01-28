@@ -12,5 +12,7 @@ router.get('/fetchEngagedChatsTimeSeries',chatController.fetchEngagedChatsTimeSe
 router.get('/fetchTotalChatDurationTimeSeries',chatController.fetchTotalChatDurationTimeSeries)
 router.get('/fetchRecommendedProductsCount',chatController.fetchRecommendedProductsCount)
 router.get('/fetchClickedProductsCount',chatController.fetchClickedProductsCount)
+router.get('/fetchAvgChatDurationTimeSeries',chatController.fetchAvgChatDurationTimeSeries)
+router.get('/fetchTotalChatsWithUserProduct',chatController.fetchTotalChatsWithUserProduct) 
 
 module.exports = router;
