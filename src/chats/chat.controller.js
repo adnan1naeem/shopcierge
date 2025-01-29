@@ -1178,6 +1178,244 @@ const fetchTotalChatsWithUserProduct = async (req, res) => {
   }
 };
 
+const getProductsSold = async (req, res) => {
+  try {
+    const { startDate, endDate, shopId } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    // Convert query parameters to appropriate types
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+    const shopObjectId = new mongoose.Types.ObjectId(shopId);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Aggregation pipeline
+    const pipeline = [
+      {
+        $match: {
+          shopId: shopObjectId,
+          createdAt: { $gte: start, $lte: end },
+          "shopciergeAttribution.attributedProductIds": {
+            $exists: true,
+            $not: { $size: 0 }, // Ensure array is not empty
+          },
+        },
+      },
+      {
+        $addFields: {
+          // Convert attributedProductIds array to simple string array
+          attributedProductIdsArray: {
+            $map: {
+              input: "$shopciergeAttribution.attributedProductIds",
+              as: "ap",
+              in: "$$ap.id",
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          // Filter line items and calculate total quantity per order
+          totalQuantity: {
+            $sum: {
+              $map: {
+                input: {
+                  $filter: {
+                    input: "$lineItems",
+                    as: "item",
+                    cond: {
+                      $and: [
+                        { $ne: ["$$item.product.id", null] }, // Ensure product.id exists
+                        {
+                          $in: [
+                            "$$item.product.id",
+                            "$attributedProductIdsArray",
+                          ],
+                        },
+                      ],
+                    },
+                  },
+                },
+                as: "filteredItem",
+                in: "$$filteredItem.quantity",
+              },
+            },
+          },
+        },
+      },
+      {
+        $group: {
+          // Sum quantities across all matching orders
+          _id: null,
+          totalProductsSold: { $sum: "$totalQuantity" },
+        },
+      },
+    ];
+
+    const result = await OrderModel.aggregate(pipeline);
+    const total = result.length > 0 ? result[0].totalProductsSold : 0;
+
+    res.json({ productsSold: total });
+  } catch (error) {
+    console.error("Error calculating products sold:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+};
+
+const fetchSupportChatsAnswered = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+    
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    const supportChats = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+          mainTopics: "Support",
+          isEscalated: false,
+          chatOutcome: "good",
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalSupportChatsAnswered: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const totalSupportChatsAnswered = supportChats.length > 0 ? supportChats[0].totalSupportChatsAnswered : 0;
+
+    return res.status(200).json({
+      category: "Support",
+      name: "Support Chats Answered",
+      value: totalSupportChatsAnswered,
+    });
+  } catch (error) {
+    console.error("Error fetching support chats answered:", error);
+    return res.status(500).json({ error: "Failed to fetch support chats answered" });
+  }
+};
+
+
+async function fetchSalesFunnel(req, res) {
+  try {
+    // Parse query parameters
+    const { startDate, endDate, shopId } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    // Convert query parameters to appropriate types
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+    const shopObjectId = new mongoose.Types.ObjectId(shopId);
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Convert shopId to Mongoose ObjectId
+
+    // Fetch counts for each stage of the sales funnel
+    const funnelSteps = await Promise.all([
+      fetchTotalChats(start, end, shopObjectId),
+      fetchChatsWithUserMessage(start, end, shopObjectId),
+      fetchChatsWithProductRecommendation(start, end, shopObjectId),
+      fetchChatsWithProductClicks(start, end, shopObjectId),
+      fetchChatsWithPurchases(start, end, shopObjectId),
+    ]);
+
+    // Format the response
+    const response = [
+      { stage: "Chat Started", count: funnelSteps[0] },
+      { stage: "User Sent Message", count: funnelSteps[1] },
+      { stage: "Product Recommended", count: funnelSteps[2] },
+      { stage: "User Clicked Product", count: funnelSteps[3] },
+      { stage: "User Purchased Product", count: funnelSteps[4] },
+    ];
+
+    res.status(200).json(response);
+  } catch (error) {
+    console.error("Error fetching sales funnel:", error);
+    res.status(500).json({ error: "Internal Server Error" });
+  }
+}
+
+// Helper functions to fetch counts for each stage
+async function fetchTotalChats(startDate, endDate, shopId) {
+  return chatModel.countDocuments({
+    createdAt: { $gte: startDate, $lte: endDate },
+    shopId: shopId,
+  });
+}
+
+async function fetchChatsWithUserMessage(startDate, endDate, shopId) {
+  return chatModel.countDocuments({
+    createdAt: { $gte: startDate, $lte: endDate },
+    shopId: shopId,
+    "messages.role": "user",
+  });
+}
+
+async function fetchChatsWithProductRecommendation(startDate, endDate, shopId) {
+  return chatModel.countDocuments({
+    createdAt: { $gte: startDate, $lte: endDate },
+    shopId: shopId,
+    messages: {
+      $elemMatch: {
+        role: "assistant",
+        productData: { $exists: true, $ne: [] },
+      },
+    },
+  });
+}
+
+async function fetchChatsWithProductClicks(startDate, endDate, shopId) {
+  return chatModel.countDocuments({
+    createdAt: { $gte: startDate, $lte: endDate },
+    shopId: shopId,
+    productClicks: { $exists: true, $not: { $size: 0 } },
+  });
+}
+
+async function fetchChatsWithPurchases(startDate, endDate, shopId) {
+  const orders = await OrderModel.find({
+    shopId: shopId,
+    createdAt: { $gte: startDate, $lte: endDate },
+    "shopciergeAttribution.chatId": { $exists: true },
+    "shopciergeAttribution.attributedProductIds.0": { $exists: true },
+  });
+
+  const uniqueChatIds = [
+    ...new Set(
+      orders
+        .map((order) => order.shopciergeAttribution?.chatId?.toString())
+        .filter((chatId) => chatId)
+    ),
+  ];
+
+  return uniqueChatIds.length;
+}
+
 module.exports = {
   getChats,
   getTotalChatsByShopId,
@@ -1190,4 +1428,7 @@ module.exports = {
   fetchClickedProductsCount,
   fetchAvgChatDurationTimeSeries,
   fetchTotalChatsWithUserProduct,
+  getProductsSold,
+  fetchSalesFunnel,
+  fetchSupportChatsAnswered
 };

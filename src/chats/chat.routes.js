@@ -14,5 +14,8 @@ router.get('/fetchRecommendedProductsCount',chatController.fetchRecommendedProdu
 router.get('/fetchClickedProductsCount',chatController.fetchClickedProductsCount)
 router.get('/fetchAvgChatDurationTimeSeries',chatController.fetchAvgChatDurationTimeSeries)
 router.get('/fetchTotalChatsWithUserProduct',chatController.fetchTotalChatsWithUserProduct) 
+router.get('/getProductsSold',chatController.getProductsSold);
+router.get('/fetchSalesFunnel',chatController.fetchSalesFunnel);
+router.get('/fetchSupportChatsAnswered',chatController.fetchSupportChatsAnswered);
 
 module.exports = router;
