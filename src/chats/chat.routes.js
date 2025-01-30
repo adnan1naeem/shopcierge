@@ -17,5 +17,10 @@ router.get('/fetchTotalChatsWithUserProduct',chatController.fetchTotalChatsWithU
 router.get('/getProductsSold',chatController.getProductsSold);
 router.get('/fetchSalesFunnel',chatController.fetchSalesFunnel);
 router.get('/fetchSupportChatsAnswered',chatController.fetchSupportChatsAnswered);
+router.get('/fetchSupportChatsAnsweredPercentage',chatController.fetchSupportChatsAnsweredPercentage);
+router.get('/fetchEstimatedTimeSaved',chatController.fetchEstimatedTimeSaved);
+router.get('/fetchChatsByCategory',chatController.fetchChatsByCategory);
+router.get('/fetchShoppingRelatedChatsPercentage',chatController.fetchShoppingRelatedChatsPercentage);
+router.get('/fetchSupportChatCount',chatController.fetchSupportChatCount);
 
 module.exports = router;
