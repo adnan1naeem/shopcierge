@@ -1416,6 +1416,325 @@ async function fetchChatsWithPurchases(startDate, endDate, shopId) {
   return uniqueChatIds.length;
 }
 
+const fetchSupportChatsAnsweredPercentage = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+    
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Find total "Support" chats (all chats where mainTopics includes "Support")
+    const totalSupportChats = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: start, $lte: end },
+      mainTopics: "Support",
+    });
+
+    // Find "Support Chats Answered" (support chats that were not escalated and had a good outcome)
+    const supportChatsAnswered = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: start, $lte: end },
+      mainTopics: "Support",
+      isEscalated: false,
+      chatOutcome: "good",
+    });
+
+    // Calculate the percentage of support chats answered
+    const percentageAnswered = totalSupportChats > 0 
+      ? ((supportChatsAnswered / totalSupportChats) * 100).toFixed(2) 
+      : 0;
+
+    return res.status(200).json({
+      category: "Support",
+      name: "% Support Chats Answered",
+      value: percentageAnswered,
+    });
+  } catch (error) {
+    console.error("Error fetching % support chats answered:", error);
+    return res.status(500).json({ error: "Failed to fetch % support chats answered" });
+  }
+};
+
+const fetchEstimatedTimeSaved = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Aggregate total time saved across all chats
+    const result = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+          timeSavedMinutes: { $exists: true, $gt: 0 },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          totalTimeSaved: { $sum: "$timeSavedMinutes" },
+        },
+      },
+    ]);
+
+    const totalTimeSaved = result.length > 0 ? result[0].totalTimeSaved : 0;
+
+    return res.status(200).json({
+      category: "Support",
+      name: "Time Saved (Estimate)",
+      value: totalTimeSaved,
+    });
+  } catch (error) {
+    console.error("Error fetching estimated time saved:", error);
+    return res.status(500).json({ error: "Failed to fetch estimated time saved" });
+  }
+};
+
+const fetchChatsByCategory = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Aggregate chats by mainTopics
+    const result = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+          mainTopics: { $exists: true, $ne: [] },
+        },
+      },
+      {
+        $unwind: "$mainTopics", // Unwind array to count each topic separately
+      },
+      {
+        $group: {
+          _id: "$mainTopics",
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          category: "$_id",
+          count: 1,
+        },
+      },
+      { $sort: { count: -1 } }, // Sort by most common topics
+    ]);
+
+    return res.status(200).json({
+      category: "Chat Distribution",
+      name: "Chats by Category",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error fetching chats by category:", error);
+    return res.status(500).json({ error: "Failed to fetch chat distribution" });
+  }
+};
+
+const fetchShoppingRelatedChatsPercentage = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Count total engaged chats (chats where users sent at least one message)
+    const totalEngagedChats = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: start, $lte: end },
+      "messages.role": "user", // Ensures the chat has user interaction
+    });
+
+    // Count shopping-related engaged chats
+    const shoppingRelatedChats = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: start, $lte: end },
+      "messages.role": "user", // Ensures engagement
+      mainTopics: { $in: ["Shopping", "Sales"] }, // Matches shopping-related topics
+    });
+
+    // Calculate percentage
+    const percentage =
+      totalEngagedChats > 0
+        ? (shoppingRelatedChats / totalEngagedChats) * 100
+        : 0;
+
+    return res.status(200).json({
+      category: "Engagement",
+      name: "Percentage of Shopping-Related Chats",
+      totalEngagedChats,
+      shoppingRelatedChats,
+      percentage: percentage.toFixed(2) + "%",
+    });
+  } catch (error) {
+    console.error("Error calculating shopping-related chat percentage:", error);
+    return res.status(500).json({ error: "Failed to calculate percentage" });
+  }
+};
+
+const fetchSupportChatCount = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Count total support-related chats
+    const supportChatCount = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: start, $lte: end },
+      mainTopics: { $in: ["Support"] }, // Matches any chat where "Support" is a mainTopic
+    });
+
+    return res.status(200).json({
+      category: "Support",
+      name: "Total Support Chats",
+      totalSupportChats: supportChatCount,
+    });
+  } catch (error) {
+    console.error("Error calculating support chat count:", error);
+    return res.status(500).json({ error: "Failed to calculate support chat count" });
+  }
+};
+
+const fetchSupportChatsBySubcategory = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Aggregate subTopics for support-related chats
+    const subTopicDistribution = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+          mainTopics: { $in: ["Support"] },
+        },
+      },
+      {
+        $unwind: "$subTopics",
+      },
+      {
+        $group: {
+          _id: "$subTopics", 
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          subCategory: "$_id",
+          count: 1,
+          _id: 0,
+        },
+      },
+      { $sort: { count: -1 } },
+    ]);
+
+    return res.status(200).json({
+      category: "Support",
+      name: "Support Chats by Subcategory",
+      chartData: subTopicDistribution,
+    });
+  } catch (error) {
+    console.error("Error calculating support chat subcategories:", error);
+    return res.status(500).json({ error: "Failed to calculate support chat subcategories" });
+  }
+};
+
+
+const fetchChatEscalations = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Count chats that were escalated
+    const escalatedChatsCount = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: start, $lte: end },
+      isEscalated: true, // Only count chats that were escalated
+    });
+
+    return res.status(200).json({
+      category: "Support",
+      name: "Chat Escalations",
+      value: escalatedChatsCount,
+    });
+  } catch (error) {
+    console.error("Error fetching chat escalations:", error);
+    return res.status(500).json({ error: "Failed to fetch chat escalations" });
+  }
+};
+
+
+
+
 module.exports = {
   getChats,
   getTotalChatsByShopId,
@@ -1430,5 +1749,12 @@ module.exports = {
   fetchTotalChatsWithUserProduct,
   getProductsSold,
   fetchSalesFunnel,
-  fetchSupportChatsAnswered
+  fetchSupportChatsAnswered,
+  fetchSupportChatsAnsweredPercentage,
+  fetchEstimatedTimeSaved,
+  fetchChatsByCategory,
+  fetchShoppingRelatedChatsPercentage,
+  fetchSupportChatCount,
+  fetchSupportChatsBySubcategory,
+  fetchChatEscalations
 };
