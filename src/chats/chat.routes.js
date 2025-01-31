@@ -22,5 +22,7 @@ router.get('/fetchEstimatedTimeSaved',chatController.fetchEstimatedTimeSaved);
 router.get('/fetchChatsByCategory',chatController.fetchChatsByCategory);
 router.get('/fetchShoppingRelatedChatsPercentage',chatController.fetchShoppingRelatedChatsPercentage);
 router.get('/fetchSupportChatCount',chatController.fetchSupportChatCount);
+router.get('/fetchSupportChatsBySubcategory',chatController.fetchSupportChatsBySubcategory);
+router.get('/fetchChatEscalations',chatController.fetchChatEscalations);
 
 module.exports = router;

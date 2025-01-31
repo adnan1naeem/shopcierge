@@ -1644,6 +1644,93 @@ const fetchSupportChatCount = async (req, res) => {
   }
 };
 
+const fetchSupportChatsBySubcategory = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Aggregate subTopics for support-related chats
+    const subTopicDistribution = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lte: end },
+          mainTopics: { $in: ["Support"] },
+        },
+      },
+      {
+        $unwind: "$subTopics",
+      },
+      {
+        $group: {
+          _id: "$subTopics", 
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          subCategory: "$_id",
+          count: 1,
+          _id: 0,
+        },
+      },
+      { $sort: { count: -1 } },
+    ]);
+
+    return res.status(200).json({
+      category: "Support",
+      name: "Support Chats by Subcategory",
+      chartData: subTopicDistribution,
+    });
+  } catch (error) {
+    console.error("Error calculating support chat subcategories:", error);
+    return res.status(500).json({ error: "Failed to calculate support chat subcategories" });
+  }
+};
+
+
+const fetchChatEscalations = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
+
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const end = endDate ? new Date(endDate) : new Date();
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999);
+
+    // Count chats that were escalated
+    const escalatedChatsCount = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: start, $lte: end },
+      isEscalated: true, // Only count chats that were escalated
+    });
+
+    return res.status(200).json({
+      category: "Support",
+      name: "Chat Escalations",
+      value: escalatedChatsCount,
+    });
+  } catch (error) {
+    console.error("Error fetching chat escalations:", error);
+    return res.status(500).json({ error: "Failed to fetch chat escalations" });
+  }
+};
 
 
 
@@ -1667,5 +1754,7 @@ module.exports = {
   fetchEstimatedTimeSaved,
   fetchChatsByCategory,
   fetchShoppingRelatedChatsPercentage,
-  fetchSupportChatCount
+  fetchSupportChatCount,
+  fetchSupportChatsBySubcategory,
+  fetchChatEscalations
 };
