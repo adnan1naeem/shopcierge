@@ -24,5 +24,6 @@ router.get('/fetchShoppingRelatedChatsPercentage',chatController.fetchShoppingRe
 router.get('/fetchSupportChatCount',chatController.fetchSupportChatCount);
 router.get('/fetchSupportChatsBySubcategory',chatController.fetchSupportChatsBySubcategory);
 router.get('/fetchChatEscalations',chatController.fetchChatEscalations);
+router.get('/fetchTotalVisitors',chatController.fetchTotalVisitors);
 
 module.exports = router;

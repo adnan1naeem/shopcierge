@@ -1445,14 +1445,12 @@ const fetchSupportChatsAnsweredPercentage = async (req, res) => {
     firstPeriodStart.setHours(0, 0, 0, 0);
     firstPeriodEnd.setHours(23, 59, 59, 999);
 
-    // Find total "Support" chats (all chats where mainTopics includes "Support")
     const totalSupportChats = await chatModel.countDocuments({
       shopId: shopIdObject,
       createdAt: { $gte: start, $lte: end },
       mainTopics: "Support",
     });
 
-    // Find "Support Chats Answered" (support chats that were not escalated and had a good outcome)
     const supportChatsAnswered = await chatModel.countDocuments({
       shopId: shopIdObject,
       createdAt: { $gte: start, $lte: end },
@@ -1461,7 +1459,6 @@ const fetchSupportChatsAnsweredPercentage = async (req, res) => {
       chatOutcome: "good",
     });
 
-    // Aggregate data for the previous period (same duration before `startDate`)
     const firstPeriodData = await chatModel.aggregate([
       {
         $match: {
@@ -1710,7 +1707,7 @@ const fetchChatsByCategory = async (req, res) => {
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
     const start = startDate
       ? new Date(startDate)
-      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
@@ -1722,38 +1719,50 @@ const fetchChatsByCategory = async (req, res) => {
         $match: {
           shopId: shopIdObject,
           createdAt: { $gte: start, $lte: end },
-          mainTopics: { $exists: true, $ne: [] },
+          "labels.mainTopics": { $exists: true, $ne: [] },
         },
       },
       {
-        $unwind: "$mainTopics", // Unwind array to count each topic separately
+        $unwind: "$labels.mainTopics", // Unwind array to count each topic separately
       },
       {
         $group: {
-          _id: "$mainTopics",
-          count: { $sum: 1 },
+          _id: "$labels.mainTopics", // Group by mainTopics
+          count: { $sum: 1 }, // Count the number of chats per category
         },
       },
       {
         $project: {
           _id: 0,
-          category: "$_id",
+          category: "$_id", // Rename _id to category
           count: 1,
         },
       },
       { $sort: { count: -1 } }, // Sort by most common topics
     ]);
 
+    const chartData = result.map((item) => ({
+      name: item.category,
+      data: [
+        {
+          key: `${start.toLocaleString("en-US", { month: "long" })} - ${end.toLocaleString("en-US", { month: "long" })}`, // Example time range
+          value: item.count,
+        },
+      ],
+    }));
+
     return res.status(200).json({
       category: "Chat Distribution",
       name: "Chats by Category",
-      data: result,
+      subTitle : "mainTopics",
+      data: chartData,
     });
   } catch (error) {
     console.error("Error fetching chats by category:", error);
     return res.status(500).json({ error: "Failed to fetch chat distribution" });
   }
 };
+
 
 const fetchShoppingRelatedChatsPercentage = async (req, res) => {
   try {
@@ -1838,7 +1847,7 @@ const fetchSupportChatCount = async (req, res) => {
         $match: {
           shopId: shopIdObject,
           createdAt: { $gte: firstPeriodStart, $lt: firstPeriodEnd },
-          "labels.mainTopics": "shopping-discovery",
+          "labels.mainTopics": "support",
         },
       },
       {
@@ -1863,7 +1872,7 @@ const fetchSupportChatCount = async (req, res) => {
         $match: {
           shopId: shopIdObject,
           createdAt: { $gte: start, $lt: end },
-          "labels.mainTopics": "shopping-discovery",
+          "labels.mainTopics": "support",
         },
       },
       {
@@ -1928,7 +1937,7 @@ const fetchSupportChatsBySubcategory = async (req, res) => {
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
     const start = startDate
       ? new Date(startDate)
-      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
@@ -1940,15 +1949,15 @@ const fetchSupportChatsBySubcategory = async (req, res) => {
         $match: {
           shopId: shopIdObject,
           createdAt: { $gte: start, $lte: end },
-          mainTopics: { $in: ["Support"] },
+          "labels.mainTopics": { $in: ["support"] },
         },
       },
       {
-        $unwind: "$subTopics",
+        $unwind: "$labels.subTopics",
       },
       {
         $group: {
-          _id: "$subTopics",
+          _id: "$labels.subTopics", 
           count: { $sum: 1 },
         },
       },
@@ -1962,10 +1971,21 @@ const fetchSupportChatsBySubcategory = async (req, res) => {
       { $sort: { count: -1 } },
     ]);
 
+    const chartData = subTopicDistribution.map((item) => ({
+      name: item.subCategory,
+      data: [
+        {
+          key: `${start.toLocaleString("en-US", { month: "long" })} - ${end.toLocaleString("en-US", { month: "long" })}`,
+          value: item.count,
+        },
+      ],
+    }));
+
     return res.status(200).json({
       category: "Support",
       name: "Support Chats by Subcategory",
-      chartData: subTopicDistribution,
+      subTitle : "breakdown of top support topics",
+      data: chartData,
     });
   } catch (error) {
     console.error("Error calculating support chat subcategories:", error);
@@ -1974,6 +1994,7 @@ const fetchSupportChatsBySubcategory = async (req, res) => {
       .json({ error: "Failed to calculate support chat subcategories" });
   }
 };
+
 const fetchChatEscalations = async (req, res) => {
   try {
     const { shopId, startDate, endDate } = req.query;
@@ -1985,7 +2006,7 @@ const fetchChatEscalations = async (req, res) => {
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
     const start = startDate
       ? new Date(startDate)
-      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
@@ -2066,7 +2087,115 @@ const fetchChatEscalations = async (req, res) => {
   }
 };
 
+const fetchTotalVisitors = async (req, res) => {
+  try {
+    const { shopId, startDate, endDate } = req.query;
 
+    if (!shopId) {
+      return res.status(400).json({ error: "shopId is required" });
+    }
+
+    const shopIdObject = new mongoose.Types.ObjectId(shopId);
+
+    // Define date ranges
+    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default last 30 days
+    const end = endDate ? new Date(endDate) : new Date(); // Default to today
+
+    start.setHours(0, 0, 0, 0);
+    end.setHours(23, 59, 59, 999); // Set end time to end of the day
+
+    // Previous period (same duration before `startDate`)
+    const diffInTime = end.getTime() - start.getTime();
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1);
+
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    // Aggregate unique visitor count for previous period
+    const firstPeriodVisitors = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: firstPeriodStart, $lt: firstPeriodEnd },
+          visitorId: { $exists: true, $ne: null },
+        },
+      },
+      { $group: { _id: "$visitorId" } },
+      { $count: "uniqueVisitors" },
+    ]);
+
+    const firstPeriodTotalVisitors = firstPeriodVisitors.length > 0 ? firstPeriodVisitors[0].uniqueVisitors : 0;
+
+    // Aggregate unique visitor count for current period
+    const secondPeriodVisitors = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lt: end },
+          visitorId: { $exists: true, $ne: null },
+        },
+      },
+      { $group: { _id: "$visitorId" } },
+      { $count: "uniqueVisitors" },
+    ]);
+
+    const secondPeriodTotalVisitors = secondPeriodVisitors.length > 0 ? secondPeriodVisitors[0].uniqueVisitors : 0;
+
+    // Aggregate daily chartData for current period
+    const secondPeriodChartData = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lt: end },
+          visitorId: { $exists: true, $ne: null },
+        },
+      },
+      {
+        $group: {
+          _id: {
+            date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+            visitorId: "$visitorId",
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$_id.date",
+          totalVisitors: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: "$totalVisitors",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Calculate trend percentage
+    const trendPercentage =
+      firstPeriodTotalVisitors > 0
+        ? ((secondPeriodTotalVisitors - firstPeriodTotalVisitors) / firstPeriodTotalVisitors) * 100
+        : secondPeriodTotalVisitors > 0
+        ? 100
+        : 0;
+
+    return res.status(200).json({
+      category: "Support",
+      name: "Total Visitors",
+      subTitle: "Unique visitors interacting with ShopCierge",
+      value: secondPeriodTotalVisitors,
+      trend: trendPercentage.toFixed(2),
+      chartData: secondPeriodChartData,
+    });
+  } catch (error) {
+    console.error("Error fetching total visitors:", error);
+    return res.status(500).json({ error: "Failed to fetch total visitors" });
+  }
+};
 
 module.exports = {
   getChats,
@@ -2090,4 +2219,5 @@ module.exports = {
   fetchSupportChatCount,
   fetchSupportChatsBySubcategory,
   fetchChatEscalations,
+  fetchTotalVisitors
 };

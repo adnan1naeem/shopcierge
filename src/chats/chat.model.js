@@ -19,6 +19,10 @@ const ChatSchema = new Schema(
       ref: "Shop",
     },
 
+    visitorId: {
+      type: String,
+    },
+
     // Array of messages within this chat
     messages: [
       {
