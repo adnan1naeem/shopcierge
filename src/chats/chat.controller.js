@@ -1277,9 +1277,11 @@ const fetchSupportChatsAnswered = async (req, res) => {
     }
 
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
-    
+
     start.setHours(0, 0, 0, 0);
     end.setHours(23, 59, 59, 999);
 
@@ -1301,7 +1303,8 @@ const fetchSupportChatsAnswered = async (req, res) => {
       },
     ]);
 
-    const totalSupportChatsAnswered = supportChats.length > 0 ? supportChats[0].totalSupportChatsAnswered : 0;
+    const totalSupportChatsAnswered =
+      supportChats.length > 0 ? supportChats[0].totalSupportChatsAnswered : 0;
 
     return res.status(200).json({
       category: "Support",
@@ -1310,10 +1313,11 @@ const fetchSupportChatsAnswered = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching support chats answered:", error);
-    return res.status(500).json({ error: "Failed to fetch support chats answered" });
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch support chats answered" });
   }
 };
-
 
 async function fetchSalesFunnel(req, res) {
   try {
@@ -1425,9 +1429,11 @@ const fetchSupportChatsAnsweredPercentage = async (req, res) => {
     }
 
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
-    
+
     start.setHours(0, 0, 0, 0);
     end.setHours(23, 59, 59, 999);
 
@@ -1448,9 +1454,10 @@ const fetchSupportChatsAnsweredPercentage = async (req, res) => {
     });
 
     // Calculate the percentage of support chats answered
-    const percentageAnswered = totalSupportChats > 0 
-      ? ((supportChatsAnswered / totalSupportChats) * 100).toFixed(2) 
-      : 0;
+    const percentageAnswered =
+      totalSupportChats > 0
+        ? ((supportChatsAnswered / totalSupportChats) * 100).toFixed(2)
+        : 0;
 
     return res.status(200).json({
       category: "Support",
@@ -1459,52 +1466,131 @@ const fetchSupportChatsAnsweredPercentage = async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching % support chats answered:", error);
-    return res.status(500).json({ error: "Failed to fetch % support chats answered" });
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch % support chats answered" });
   }
 };
 
 const fetchEstimatedTimeSaved = async (req, res) => {
   try {
-    const { shopId, startDate, endDate } = req.query;
+    const { shopId, startDate } = req.query;
 
     if (!shopId) {
       return res.status(400).json({ error: "shopId is required" });
     }
 
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-    const end = endDate ? new Date(endDate) : new Date();
+
+    // Define date ranges
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const end = new Date();
 
     start.setHours(0, 0, 0, 0);
-    end.setHours(23, 59, 59, 999);
 
-    // Aggregate total time saved across all chats
-    const result = await chatModel.aggregate([
+    // Previous period (same duration before `startDate`)
+    const diffInTime = end.getTime() - start.getTime();
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1);
+
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    console.log(firstPeriodStart, "firstPeriodEnd");
+    console.log(firstPeriodEnd, "firstPeriodEnd");
+
+    // Aggregate time saved for previous period
+    const firstPeriodData = await chatModel.aggregate([
       {
         $match: {
           shopId: shopIdObject,
-          createdAt: { $gte: start, $lte: end },
-          timeSavedMinutes: { $exists: true, $gt: 0 },
+          createdAt: { $gte: firstPeriodStart, $lt: firstPeriodEnd },
+          "labels.timeSavedMinutes": { $exists: true, $gt: 0 },
         },
       },
       {
         $group: {
-          _id: null,
-          totalTimeSaved: { $sum: "$timeSavedMinutes" },
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalTimeSaved: { $sum: "$labels.timeSavedMinutes" },
         },
       },
+      {
+        $project: {
+          key: "$_id",
+          value: "$totalTimeSaved",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
     ]);
 
-    const totalTimeSaved = result.length > 0 ? result[0].totalTimeSaved : 0;
+    // Aggregate time saved for current period
+    const secondPeriodData = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lt: end },
+          "labels.timeSavedMinutes": { $exists: true, $gt: 0 },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalTimeSaved: { $sum: "$labels.timeSavedMinutes" },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: "$totalTimeSaved",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Calculate total time saved for both periods
+    const firstPeriodTotalTimeSaved = firstPeriodData.reduce(
+      (sum, entry) => sum + entry.value,
+      0
+    );
+    const secondPeriodTotalTimeSaved = secondPeriodData.reduce(
+      (sum, entry) => sum + entry.value,
+      0
+    );
+
+    console.log(firstPeriodTotalTimeSaved, "firstPeriodTotalTimeSaved");
+    console.log(secondPeriodTotalTimeSaved, "secondPeriodTotalTimeSaved");
+
+    // Calculate trend percentage
+    const trendPercentage =
+    firstPeriodTotalTimeSaved === 0
+        ? secondPeriodTotalTimeSaved > 0
+          ? 100
+          : 0
+        : Math.min(
+            ((secondPeriodTotalTimeSaved -
+              firstPeriodTotalTimeSaved) /
+              firstPeriodTotalTimeSaved) *
+              100,
+            100
+          );
 
     return res.status(200).json({
       category: "Support",
       name: "Time Saved (Estimate)",
-      value: totalTimeSaved,
+      subTitle: "aggregated merchant time savings over time",
+      value: secondPeriodTotalTimeSaved,
+      trend: trendPercentage.toFixed(2),
+      chartData: secondPeriodData,
     });
   } catch (error) {
     console.error("Error fetching estimated time saved:", error);
-    return res.status(500).json({ error: "Failed to fetch estimated time saved" });
+    return res
+      .status(500)
+      .json({ error: "Failed to fetch estimated time saved" });
   }
 };
 
@@ -1517,7 +1603,9 @@ const fetchChatsByCategory = async (req, res) => {
     }
 
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
@@ -1571,7 +1659,9 @@ const fetchShoppingRelatedChatsPercentage = async (req, res) => {
     }
 
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
@@ -1722,7 +1812,6 @@ const fetchSupportChatCount = async (req, res) => {
   }
 };
 
-
 const fetchSupportChatsBySubcategory = async (req, res) => {
   try {
     const { shopId, startDate, endDate } = req.query;
@@ -1732,7 +1821,9 @@ const fetchSupportChatsBySubcategory = async (req, res) => {
     }
 
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
@@ -1752,7 +1843,7 @@ const fetchSupportChatsBySubcategory = async (req, res) => {
       },
       {
         $group: {
-          _id: "$subTopics", 
+          _id: "$subTopics",
           count: { $sum: 1 },
         },
       },
@@ -1773,10 +1864,11 @@ const fetchSupportChatsBySubcategory = async (req, res) => {
     });
   } catch (error) {
     console.error("Error calculating support chat subcategories:", error);
-    return res.status(500).json({ error: "Failed to calculate support chat subcategories" });
+    return res
+      .status(500)
+      .json({ error: "Failed to calculate support chat subcategories" });
   }
 };
-
 
 const fetchChatEscalations = async (req, res) => {
   try {
@@ -1787,7 +1879,9 @@ const fetchChatEscalations = async (req, res) => {
     }
 
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const start = startDate
+      ? new Date(startDate)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
@@ -1811,9 +1905,6 @@ const fetchChatEscalations = async (req, res) => {
   }
 };
 
-
-
-
 module.exports = {
   getChats,
   getTotalChatsByShopId,
@@ -1835,5 +1926,5 @@ module.exports = {
   fetchShoppingRelatedChatsPercentage,
   fetchSupportChatCount,
   fetchSupportChatsBySubcategory,
-  fetchChatEscalations
+  fetchChatEscalations,
 };
