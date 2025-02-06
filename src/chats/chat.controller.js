@@ -1431,11 +1431,19 @@ const fetchSupportChatsAnsweredPercentage = async (req, res) => {
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
     const start = startDate
       ? new Date(startDate)
-      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
     end.setHours(23, 59, 59, 999);
+
+    // Previous period (same duration before `startDate`)
+    const diffInTime = end.getTime() - start.getTime();
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1);
+
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
 
     // Find total "Support" chats (all chats where mainTopics includes "Support")
     const totalSupportChats = await chatModel.countDocuments({
@@ -1453,16 +1461,112 @@ const fetchSupportChatsAnsweredPercentage = async (req, res) => {
       chatOutcome: "good",
     });
 
+    // Aggregate data for the previous period (same duration before `startDate`)
+    const firstPeriodData = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: firstPeriodStart, $lt: firstPeriodEnd },
+          mainTopics: "Support",
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalChats: { $sum: 1 },
+          answeredChats: {
+            $sum: {
+              $cond: [{ $eq: ["$isEscalated", false] }, 1, 0],
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          totalChats: "$totalChats",
+          answeredChats: "$answeredChats",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Aggregate data for the current period
+    const secondPeriodData = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lt: end },
+          mainTopics: "Support",
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalChats: { $sum: 1 },
+          answeredChats: {
+            $sum: {
+              $cond: [{ $eq: ["$isEscalated", false] }, 1, 0],
+            },
+          },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          totalChats: "$totalChats",
+          answeredChats: "$answeredChats",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Calculate total chats and answered chats for both periods
+    const firstPeriodTotalChats = firstPeriodData.reduce(
+      (sum, entry) => sum + entry.totalChats,
+      0
+    );
+    const firstPeriodAnsweredChats = firstPeriodData.reduce(
+      (sum, entry) => sum + entry.answeredChats,
+      0
+    );
+    const secondPeriodTotalChats = secondPeriodData.reduce(
+      (sum, entry) => sum + entry.totalChats,
+      0
+    );
+    const secondPeriodAnsweredChats = secondPeriodData.reduce(
+      (sum, entry) => sum + entry.answeredChats,
+      0
+    );
+
     // Calculate the percentage of support chats answered
     const percentageAnswered =
       totalSupportChats > 0
         ? ((supportChatsAnswered / totalSupportChats) * 100).toFixed(2)
         : 0;
 
+    // Calculate trend percentage
+    const trendPercentage =
+      firstPeriodTotalChats === 0
+        ? secondPeriodTotalChats > 0
+          ? 100
+          : 0
+        : Math.min(
+            ((secondPeriodAnsweredChats - firstPeriodAnsweredChats) /
+              firstPeriodAnsweredChats) *
+              100,
+            100
+          );
+
     return res.status(200).json({
       category: "Support",
       name: "% Support Chats Answered",
+      subTitle : "AI resolution efficiency per day",
       value: percentageAnswered,
+      trend: trendPercentage.toFixed(2),
+      chartData: secondPeriodData,
     });
   } catch (error) {
     console.error("Error fetching % support chats answered:", error);
@@ -1471,6 +1575,7 @@ const fetchSupportChatsAnsweredPercentage = async (req, res) => {
       .json({ error: "Failed to fetch % support chats answered" });
   }
 };
+
 
 const fetchEstimatedTimeSaved = async (req, res) => {
   try {
@@ -1869,7 +1974,6 @@ const fetchSupportChatsBySubcategory = async (req, res) => {
       .json({ error: "Failed to calculate support chat subcategories" });
   }
 };
-
 const fetchChatEscalations = async (req, res) => {
   try {
     const { shopId, startDate, endDate } = req.query;
@@ -1887,23 +1991,82 @@ const fetchChatEscalations = async (req, res) => {
     start.setHours(0, 0, 0, 0);
     end.setHours(23, 59, 59, 999);
 
-    // Count chats that were escalated
-    const escalatedChatsCount = await chatModel.countDocuments({
+    // Previous period (same duration before `startDate`)
+    const diffInTime = end.getTime() - start.getTime();
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1);
+
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    // Count escalated chats for the previous period
+    const firstPeriodEscalatedChats = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: firstPeriodStart, $lte: firstPeriodEnd },
+      "labels.isEscalated": true,
+    });
+
+    // Count escalated chats for the current period
+    const secondPeriodEscalatedChats = await chatModel.countDocuments({
       shopId: shopIdObject,
       createdAt: { $gte: start, $lte: end },
-      isEscalated: true, // Only count chats that were escalated
+      "labels.isEscalated": true,
     });
+
+
+    // Aggregate data for the current period
+    const secondPeriodData = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lt: end },
+          "labels.isEscalated": true,
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          escalatedChats: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: "$escalatedChats",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Calculate trend percentage for escalated chats
+    const trendPercentage =
+      firstPeriodEscalatedChats === 0
+        ? secondPeriodEscalatedChats > 0
+          ? 100
+          : 0
+        : Math.min(
+            ((secondPeriodEscalatedChats - firstPeriodEscalatedChats) /
+              firstPeriodEscalatedChats) *
+              100,
+            100
+          );
 
     return res.status(200).json({
       category: "Support",
       name: "Chat Escalations",
-      value: escalatedChatsCount,
+      subTitle : "number of escalations per day",
+      value: secondPeriodEscalatedChats,
+      trend: trendPercentage.toFixed(2),
+      chartData: secondPeriodData,
     });
   } catch (error) {
     console.error("Error fetching chat escalations:", error);
     return res.status(500).json({ error: "Failed to fetch chat escalations" });
   }
 };
+
+
 
 module.exports = {
   getChats,
