@@ -1191,77 +1191,137 @@ const getProductsSold = async (req, res) => {
       ? new Date(startDate)
       : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
-    const shopObjectId = new mongoose.Types.ObjectId(shopId);
-    start.setHours(0, 0, 0, 0);
-    end.setHours(23, 59, 59, 999);
+    
+    // Previous period (same duration before `startDate`)
+    const diffInTime = end.getTime() - start.getTime();
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1);
 
-    // Aggregation pipeline
-    const pipeline = [
-      {
-        $match: {
-          shopId: shopObjectId,
-          createdAt: { $gte: start, $lte: end },
-          "shopciergeAttribution.attributedProductIds": {
-            $exists: true,
-            $not: { $size: 0 }, // Ensure array is not empty
-          },
-        },
-      },
-      {
-        $addFields: {
-          // Convert attributedProductIds array to simple string array
-          attributedProductIdsArray: {
-            $map: {
-              input: "$shopciergeAttribution.attributedProductIds",
-              as: "ap",
-              in: "$$ap.id",
+    // Function to perform aggregation based on date range
+    const aggregateProductsSold = async (shopId, startDate, endDate) => {
+      const shopObjectId = new mongoose.Types.ObjectId(shopId);
+      
+      // Convert to correct date objects and adjust time to 00:00:00 for startDate and 23:59:59 for endDate
+      startDate.setHours(0, 0, 0, 0);
+      endDate.setHours(23, 59, 59, 999);
+
+      // Aggregation pipeline
+      const pipeline = [
+        {
+          $match: {
+            shopId: shopObjectId,
+            createdAt: { $gte: startDate, $lte: endDate },
+            "shopciergeAttribution.attributedProductIds": {
+              $exists: true,
+              $not: { $size: 0 },
             },
           },
         },
-      },
-      {
-        $project: {
-          // Filter line items and calculate total quantity per order
-          totalQuantity: {
-            $sum: {
+        {
+          $addFields: {
+            attributedProductIdsArray: {
               $map: {
-                input: {
-                  $filter: {
-                    input: "$lineItems",
-                    as: "item",
-                    cond: {
-                      $and: [
-                        { $ne: ["$$item.product.id", null] }, // Ensure product.id exists
-                        {
-                          $in: [
-                            "$$item.product.id",
-                            "$attributedProductIdsArray",
-                          ],
-                        },
-                      ],
-                    },
-                  },
-                },
-                as: "filteredItem",
-                in: "$$filteredItem.quantity",
+                input: "$shopciergeAttribution.attributedProductIds",
+                as: "ap",
+                in: "$$ap.id",
               },
             },
           },
         },
-      },
-      {
-        $group: {
-          // Sum quantities across all matching orders
-          _id: null,
-          totalProductsSold: { $sum: "$totalQuantity" },
+        {
+          $project: {
+            totalQuantity: {
+              $sum: {
+                $map: {
+                  input: {
+                    $filter: {
+                      input: "$lineItems",
+                      as: "item",
+                      cond: {
+                        $and: [
+                          { $ne: ["$$item.product.id", null] },
+                          {
+                            $in: [
+                              "$$item.product.id",
+                              "$attributedProductIdsArray",
+                            ],
+                          },
+                        ],
+                      },
+                    },
+                  },
+                  as: "filteredItem",
+                  in: "$$filteredItem.quantity",
+                },
+              },
+            },
+          },
         },
-      },
-    ];
+        {
+          $group: {
+            _id: null,
+            totalProductsSold: { $sum: "$totalQuantity" },
+            chartData: {
+              $push: {
+                key: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                value: {
+                  $sum: {
+                    $map: {
+                      input: {
+                        $filter: {
+                          input: "$lineItems",
+                          as: "item",
+                          cond: {
+                            $and: [
+                              { $ne: ["$$item.product.id", null] },
+                              {
+                                $in: [
+                                  "$$item.product.id",
+                                  "$attributedProductIdsArray",
+                                ],
+                              },
+                            ],
+                          },
+                        },
+                      },
+                      as: "filteredItem",
+                      in: "$$filteredItem.quantity",
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      ];
 
-    const result = await OrderModel.aggregate(pipeline);
-    const total = result.length > 0 ? result[0].totalProductsSold : 0;
+      // Execute aggregation
+      const result = await OrderModel.aggregate(pipeline);
+      return result.length > 0 ? result[0] : { totalProductsSold: 0, chartData: [] };
+    };
 
-    res.json({ productsSold: total });
+    // Fetch data for current and previous periods using the aggregate function
+    const currentPeriodData = await aggregateProductsSold(shopId, start, end);
+    const previousPeriodData = await aggregateProductsSold(shopId, firstPeriodStart, firstPeriodEnd);
+
+    // Calculate trend
+    const trendPercentage =
+      previousPeriodData.totalProductsSold === 0
+        ? currentPeriodData.totalProductsSold > 0
+          ? 100
+          : 0
+        : Math.min(
+            ((currentPeriodData.totalProductsSold - previousPeriodData.totalProductsSold) / previousPeriodData.totalProductsSold) * 100,
+            100
+          );
+
+    res.json({
+      category: "Sales",
+      name: "Products Sold",
+      totalProductsSold: currentPeriodData.totalProductsSold,
+      trend: trendPercentage.toFixed(2),
+      chartData: currentPeriodData.chartData,
+    });
   } catch (error) {
     console.error("Error calculating products sold:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -1277,39 +1337,108 @@ const fetchSupportChatsAnswered = async (req, res) => {
     }
 
     const shopIdObject = new mongoose.Types.ObjectId(shopId);
+
+    // Define start date and end date
     const start = startDate
       ? new Date(startDate)
-      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+      : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
 
     start.setHours(0, 0, 0, 0);
     end.setHours(23, 59, 59, 999);
 
-    const supportChats = await chatModel.aggregate([
+    // Previous period (same duration before `startDate`)
+    const diffInTime = end.getTime() - start.getTime();
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1);
+
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    // Aggregate Support Chats Answered for previous period
+    const firstPeriodData = await chatModel.aggregate([
       {
         $match: {
           shopId: shopIdObject,
-          createdAt: { $gte: start, $lte: end },
-          mainTopics: "Support",
+          createdAt: { $gte: firstPeriodStart, $lt: firstPeriodEnd },
+          "labels.mainTopics": "Support",
           isEscalated: false,
           chatOutcome: "good",
         },
       },
       {
         $group: {
-          _id: null,
-          totalSupportChatsAnswered: { $sum: 1 },
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalChatsAnswered: { $sum: 1 },
         },
       },
+      {
+        $project: {
+          key: "$_id",
+          value: "$totalChatsAnswered",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
     ]);
 
-    const totalSupportChatsAnswered =
-      supportChats.length > 0 ? supportChats[0].totalSupportChatsAnswered : 0;
+    // Aggregate Support Chats Answered for current period
+    const secondPeriodData = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lt: end },
+          "labels.mainTopics": "Support",
+          isEscalated: false,
+          chatOutcome: "good",
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          totalChatsAnswered: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: "$totalChatsAnswered",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    // Calculate total support chats answered for both periods
+    const firstPeriodTotalChats = firstPeriodData.reduce(
+      (sum, entry) => sum + entry.value,
+      0
+    );
+    const secondPeriodTotalChats = secondPeriodData.reduce(
+      (sum, entry) => sum + entry.value,
+      0
+    );
+
+    // Calculate trend percentage
+    const trendPercentage =
+      firstPeriodTotalChats === 0
+        ? secondPeriodTotalChats > 0
+          ? 100
+          : 0
+        : Math.min(
+            ((secondPeriodTotalChats - firstPeriodTotalChats) /
+              firstPeriodTotalChats) *
+              100,
+            100
+          );
 
     return res.status(200).json({
       category: "Support",
       name: "Support Chats Answered",
-      value: totalSupportChatsAnswered,
+      subTitle: "Aggregated chats resolved over time",
+      value: secondPeriodTotalChats,
+      trend: trendPercentage.toFixed(2),
+      chartData: secondPeriodData, // Data for trend visualization
     });
   } catch (error) {
     console.error("Error fetching support chats answered:", error);
@@ -1781,33 +1910,75 @@ const fetchShoppingRelatedChatsPercentage = async (req, res) => {
     start.setHours(0, 0, 0, 0);
     end.setHours(23, 59, 59, 999);
 
-    // Count total engaged chats (chats where users sent at least one message)
-    const totalEngagedChats = await chatModel.countDocuments({
+    const diffInTime = end.getTime() - start.getTime();
+    const firstPeriodStart = new Date(start.getTime() - diffInTime);
+    const firstPeriodEnd = new Date(start.getTime() - 1);
+
+    firstPeriodStart.setHours(0, 0, 0, 0);
+    firstPeriodEnd.setHours(23, 59, 59, 999);
+
+    const secondPeriodData = await chatModel.aggregate([
+      {
+        $match: {
+          shopId: shopIdObject,
+          createdAt: { $gte: start, $lt: end },
+          "messages.role": "user",
+          "labels.mainTopics": { $in: ["Shopping", "Sales"] },
+        },
+      },
+      {
+        $group: {
+          _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+          shoppingRelatedChats: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          key: "$_id",
+          value: "$shoppingRelatedChats",
+          _id: 0,
+        },
+      },
+      { $sort: { key: 1 } },
+    ]);
+
+    const totalEngagedChatsFirstPeriod = await chatModel.countDocuments({
       shopId: shopIdObject,
-      createdAt: { $gte: start, $lte: end },
-      "messages.role": "user", // Ensures the chat has user interaction
+      createdAt: { $gte: firstPeriodStart, $lt: firstPeriodEnd },
+      "messages.role": "user",
+    });
+    const totalEngagedChatsSecondPeriod = await chatModel.countDocuments({
+      shopId: shopIdObject,
+      createdAt: { $gte: start, $lt: end },
+      "messages.role": "user",
     });
 
-    // Count shopping-related engaged chats
-    const shoppingRelatedChats = await chatModel.countDocuments({
-      shopId: shopIdObject,
-      createdAt: { $gte: start, $lte: end },
-      "messages.role": "user", // Ensures engagement
-      mainTopics: { $in: ["Shopping", "Sales"] }, // Matches shopping-related topics
-    });
-
-    // Calculate percentage
     const percentage =
-      totalEngagedChats > 0
-        ? (shoppingRelatedChats / totalEngagedChats) * 100
+      totalEngagedChatsSecondPeriod > 0
+        ? (secondPeriodData.reduce((sum, entry) => sum + entry.value, 0) /
+            totalEngagedChatsSecondPeriod) *
+          100
         : 0;
+
+    const trendPercentage =
+      totalEngagedChatsFirstPeriod === 0
+        ? totalEngagedChatsSecondPeriod > 0
+          ? 100
+          : 0
+        : Math.min(
+            ((totalEngagedChatsSecondPeriod -
+              totalEngagedChatsFirstPeriod) /
+              totalEngagedChatsFirstPeriod) *
+              100,
+            100
+          );
 
     return res.status(200).json({
       category: "Engagement",
       name: "Percentage of Shopping-Related Chats",
-      totalEngagedChats,
-      shoppingRelatedChats,
-      percentage: percentage.toFixed(2) + "%",
+      value: percentage.toFixed(2) + "%",
+      trend: trendPercentage.toFixed(2),
+      chartData: secondPeriodData, 
     });
   } catch (error) {
     console.error("Error calculating shopping-related chat percentage:", error);
